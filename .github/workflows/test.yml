@@ -1,0 +1,14 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate action.yml
+        run: ruby -ryaml -e 'a = YAML.load_file("action.yml"); abort "no steps" if a.dig("runs", "steps").to_a.empty?'

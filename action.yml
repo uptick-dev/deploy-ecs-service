@@ -1,0 +1,96 @@
+name: Deploy ECS Service
+description: >-
+  Render an ECS task definition with a new image, then deploy it to a service
+  and wait for it to settle, or only register it (for one-off tasks such as
+  migrations).
+
+inputs:
+  task-definition:
+    description: Path to the ECS task definition JSON file.
+    required: true
+  container-name:
+    description: Name of the container in the task definition that gets the image.
+    required: true
+  image:
+    description: Full image URI with tag.
+    required: true
+  cluster:
+    description: ECS cluster name. Required with service.
+    required: false
+    default: ""
+  service:
+    description: ECS service to deploy to. Empty only registers the task definition.
+    required: false
+    default: ""
+  environment-variables:
+    description: Newline-separated KEY=value pairs set on the container (e.g. DD_VERSION).
+    required: false
+    default: ""
+  docker-labels:
+    description: Newline-separated key=value Docker labels set on the container.
+    required: false
+    default: ""
+  wait-for-service-stability:
+    description: Wait for the service to reach a steady state after deploying.
+    required: false
+    default: "true"
+  role-to-assume:
+    description: >-
+      IAM role ARN to assume over OIDC before deploying (the job needs
+      `id-token: write`). Empty uses credentials the job already configured.
+    required: false
+    default: ""
+  aws-region:
+    description: AWS region, used when role-to-assume is set.
+    required: false
+    default: us-east-1
+
+outputs:
+  task-definition:
+    description: Path to the rendered task definition file.
+    value: ${{ steps.render.outputs.task-definition }}
+  task-definition-arn:
+    description: ARN of the registered task definition revision.
+    value: ${{ steps.deploy.outputs.task-definition-arn || steps.register.outputs.task-definition-arn }}
+
+runs:
+  using: composite
+  steps:
+    - name: Configure AWS credentials
+      if: inputs.role-to-assume != ''
+      uses: aws-actions/configure-aws-credentials@v6
+      with:
+        role-to-assume: ${{ inputs.role-to-assume }}
+        aws-region: ${{ inputs.aws-region }}
+
+    - name: Render ECS task definition
+      id: render
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: ${{ inputs.task-definition }}
+        container-name: ${{ inputs.container-name }}
+        image: ${{ inputs.image }}
+        environment-variables: ${{ inputs.environment-variables }}
+        docker-labels: ${{ inputs.docker-labels }}
+
+    - name: Deploy ECS task definition
+      id: deploy
+      if: inputs.service != ''
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+      with:
+        task-definition: ${{ steps.render.outputs.task-definition }}
+        service: ${{ inputs.service }}
+        cluster: ${{ inputs.cluster }}
+        wait-for-service-stability: ${{ inputs.wait-for-service-stability }}
+
+    - name: Register ECS task definition
+      id: register
+      if: inputs.service == ''
+      shell: bash
+      env:
+        TASK_DEFINITION: ${{ steps.render.outputs.task-definition }}
+      run: |
+        set -euo pipefail
+        ARN="$(aws ecs register-task-definition --cli-input-json "file://$TASK_DEFINITION" --query 'taskDefinition.taskDefinitionArn' --output text)"
+        echo "Registered $ARN"
+        echo "task-definition-arn=$ARN" >> "$GITHUB_OUTPUT"
